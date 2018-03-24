@@ -1,0 +1,2 @@
+jenkins ALL=(ALL) NOPASSWD: /usr/bin/docker
+jenkins ALL=(ALL) NOPASSWD: /bin/rm -rf /var/lib/tomcat7/webapps/static /var/lib/tomcat7/webapps/__MACOSX /var/lib/tomcat7/webapps/ROOT /var/lib/tomcat7/webapps/ROOT.war

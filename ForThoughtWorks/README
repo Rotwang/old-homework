@@ -1,0 +1,174 @@
+Following readme describes installation, rationale, security concerns and missing features of the "DevOps assignement" for ThoughtWorks recruitment process.
+%  Please note that following setup doesn't take into account that you may be behind http(s) proxy (it can sometimes complicate setup).
+%% Please note that /etc/puppet isn't kept in any vcs but in real life I'd keep all of that in a vcs.
+
+
+OVERVIEW
+=====
+* Contents of this archive:
+- preseed.cfg: Installer configuration file for the debian and derivatives linux distributions (preseed to debian is what kickstart is to rhel).
+- puppet.txz: (It is unpacked right now) /etc/puppet directory for puppet master, it also contains following two archives:
+  - jenkins-home.tgz: contains jenkins config files needed for our delivery/deployment environment.
+  - scm-home.tgz: (this was removed because it was supplied by ThoughtWorks) git repository with companyNews codebase (actually it contains the .war and .zip files).
+- README: File you're reading right now.
+
+* Development/Production environment described in this README consists mostly of the following components:
+- Ubuntu 14.04.2
+Ubuntu is well established GNU/Linux distribution for desktops, its server version is suitable for our purpose and is proven to work in similar environments.
+- Jenkins
+Jenkins is leading FLOSS continuous integration server. It is well tested (although not bug free or feature full) CI platform.
+- Puppet
+Puppet by Puppet Labs is an automated administrative engine. It will be used for 'production' and 'training' servers configuration management. It sometimes can cause huge headaches (e.g. the dependency management or the ssl certficates) though.
+- Git
+Version control system (you need one if you want to develop software [;)
+- Docker
+LXC without lxc on steroids. Will be used to deploy comanyNews on the production server.
+- Tomcat7
+FLOSS servlet container will be used to deploy companyNews to both test and production environments.
+
+* Workflow
+Jenkins is available on port 8888. Please note that all scripts are contained within jenkins server in "execute shells" in real world it may be not a very good idea and it is better to keep those scripts in the vcs of some kind.
+The idea is that after developer commits (or pushes to main delivery repo) jenkins takes over, builds/tests and then deploys the software to test environment and the production env. Lets assume the test suite is exhaustive and stable enough to be the basis for public release. Lets focus on jenkins operations, it has four jobs:
+
+(A -> B means that succesful job A triggers job B)
+build_and_test_companynews -
+                             \
+                              -> tenv_deploy_companynews
+                              -> prod_image_companynews -> prod_deploy_companynews
+
+build_and_test_companynews - Entry point for our pipeline. Poll the delivery repository then fetch sources, build and test (in our case nothing like that happens and the job needs to be run by hand). If the job is succesful that means the tested revision/commit is promoted. The job represents what in real life would be whole CI pipeline.
+tenv_deploy_companynews    - Deploy promoted application to the test environment (tomcat7 on host). The deployed application is available on port 8080 on training server.
+prod_image_companynews     - Build a docker image (based on tomcat7 image from the official registry) with promoted software. Then push the image to local docker registry.
+prod_deploy_companynews    - Run the created image on the production server via docker. The application should be available at production server port 80. The persistance is located in /var/lib so it stays between image restarts.
+
+% The production environment has persistence layer set to /var/lib/companynews_persistence while the test environment /home/russell/persistence.
+%% administrative user for jenkins is: 'tw' and password is 'tw'
+
+
+INSTALLATION AND CONFIGURATION
+=====
+* TL;DR
+Base ubuntu 14.04 needs to be installed, after that the configuration is done by puppet (all is available in the archive delivered along with this README), however in order to simulate "working" environment (i.e. the environment on which develpers are actively working and the production application is deployed) we need to provide configured jenkins and vcs with our software. After the environment is up and running our software is deployed by jenkins to the test environment and to production environment via docker.
+
+* Requirements.
+I've used VirtualBox + ubuntu 14.04.2 iso but no matter if you use Cloud/VirtualBox/Bare metal the setup should be very similar.
+The operating system of my choice is ubuntu 14.04 So you'll need iso or pxe setup or usb stick (in fact any media will do).
+
+* Training server installation.
+** Ubuntu installation.
+In order to automate the installation I've used preseeding, it is supposed to setup basic ubuntu which will be a starting point for puppet to do further configuration. You may as well install the ubuntu interactively and skip to the next point (** Configure system with puppet).
+
+You'll have to set up two systems, one will be called 'training.local' and the other one 'production.local'.
+training.local -  server used for automatic testing of the application and delivery/deployment, in real world it would be spilt into few distinct servers (e.g. server that holds the vcs delivery repository, server that holds jenkins instance, build jenkins slave, test jenkins slave etc.).
+procuction.local - server used to run software suitable for production.
+
+- If you're using virtualization like VirtualBox your training vm will need around 1GB of RAM, disk space requirements are low so any sane amount will do. One processor core should be enough for the demonstration purposes.
+- Make preseed.cfg (included in the same directory as README) available via http (I've used python -m SimpleHTTPServer 80).
+- Boot ubuntu 14.04.2 installer, choose language, press F6 and then Esc and prepend boot options (if dhcp server is not available then you'll also have to pass ip/netmask/gateway addresses):
+    auto url=<ip of your http server>/<preseed.cfg location> debian-installer/locale=en_US console-setup/ask_detect=false keyboard-configuration/layoutcode=us hostname=training domain=local
+  - The installation should proceed in non-interactive manner.
+  - As mentioned previously if you don't want to use preseeding or already have base system installed (or want to do it yourself) you can skip this step and move to puppet setup.
+- After the installer has rebooted please remove the medium and boot to freshly installed training environment.
+- User automatically configured by preseed for this new install (user has sudo access):
+  - username: preseed
+  - password: preseed
+- Obviously having automatically created user with root access isn't the best idea ever (probably everyone knows the password already). After you log in, create new user and add him to the 'sudo' group:
+  - # useradd -m -G sudo <myuser>
+  - # passwd <myuser>
+- If you didn't use preseed for installation don't forget to install puppet and ssh (if you used preseed those packages already should be available):
+  - # apt-get update && apt-get install openssh-server puppet puppetmaste
+
+** Configure system with puppet:
+- After you relogin to a new user you'll need to untar puppet.txz included in the same directory as this README:
+  - Copy puppet.txz to your newly installed server (however you like, e.g. use scp).
+  - Remove /etc/puppet
+    # rm -rf /etc/puppet
+  - Untar puppet:
+    # cd /etc && tar xJf <puppet.txz location>
+- Since I've used dnsmasq the /etc/hosts needs to be configured with actual ip addresses, You'll have to enter ip address as following:
+  - Edit /etc/puppet/manifests/site.pp and replace '$master_ip' value with your "public" ip ("public" ip is the ip that you'll use to communicate with your production server).
+  - If there were dns servers configured for our hosts the the dnsmasq wouldn't be necessary.
+  - '$prod_ip' may be left untouched for now.
+- Restart puppet master (puppet can be sometimes major PITA).
+  # service puppetmaster restart
+- Run puppet agent!
+  # puppet agent --enable
+  # puppet agent --verbose
+  - note that initial puppet run may take easily more than 10 minutes dependent on your network (docker pulls images and puppet installs packages)
+
+** One time initial configuration (bring the environment up to speed):
+- Deploy "fake" repository with companyNews software (it is just a git repo with companyNews.war and static.zip):
+  # cd /home/scm && tar xzf /etc/puppet/files/scm-home.tgz
+- For continuous integration/delivery/deployment we will use jenkins ci server. I've prepared jenkins configuration that is capable of delivering our software.
+  # service jenkins stop
+  # cd /var/lib/jenkins && tar xzf /etc/puppet/files/jenkins-home.tgz
+  # service jenkins start
+  - jenkins will listen on 0.0.0.0:8888
+  - username: tw
+  - password: tw
+  - 3 plugins must be installed in order for Jenkins to run our delivery/deployment process smoothly (Manage Jenkins -> Manage Plugins -> Available ([ctrl + f] and search for the three plugins below) -> Download now and install after restart):
+    It is important that jenkins is restarted after plugins installation.
+    - Copy Artifact Plugin; copy artifacts between jobs (why isn't it in the default jenkins featureset?).
+    - GIT Plugin; we pretend here that development is done in git so we need plugin that will be able to fetch sources from git.
+    - Parameterized Trigger Plugin; trigger jobs with parameters (again, why isn't it in the default jenkins featureset?).
+  - Once everything is ready:
+    - Triggering 'build_and_test_companynews' job should:
+      - Cause the 'comanyNews' to be deployed to training tomcat7 server and should be available on port 8080 on the training.local server.
+      - Prepare docker image suitable for production.
+
+* Production installation.
+** Ubuntu installation.
+- You'll need vm with some ram (512 may be ok) and some disk space (whatever will hold base system + java + docker image(s)).
+- the same as in 'training' with the difference that 'hostname=production domain=local' should be passed on the kernel command line.
+
+** Configure system with puppet.
+- Fill in the ip for '$prod_ip' variable on the puppet master (training). If not for dnsmasq this wouldn't be necessary.
+- If you didn't use preseeding add 'server=training.local' to '[main]' section in puppet.conf and 'daemonize=false', 'onetime=true' to '[agent]' section (if it doesn't exist, create one).
+- Add training.local entry to /etc/hosts (again, if we had working dns we wouldn't have to worry about that).
+- If you encounter issues with ssl certificate, just nuke it (rm -rf /var/lib/puppet/ssl/*). Did I say already that puppet can be a real pain (next time I'll use salt or other ansible)?
+- If the certificate is not accepted automatically (and it shouldn't be since it is production environment) accept it on the master (puppet cert sign production.local).
+- Run puppet agent.
+  # puppet agent --enable
+  # puppet agent --verbose
+
+** One time initial configuration (bring the environment up to speed):
+- Not required as the 'training' server is doing the deployment (all we need here is docker which should be already up and running).
+
+* Testing if setup works.
+- Trigger 'build_and_test_companynews', if the application becomes available on production.local:80, everything went correctly.
+
+
+ON COMPANYNEWS APPLICATION
+=====
+I've noticed that files from static.zip (in fact any external resources) are not used. I've looked through generated code and with firebug (in case I've missed something). Anyway I still deploy them to tomcat as soon they may be used.
+I've also encountered encoding issue, if characters outside ASCII are used it may be dispalyed incorrectly by the browser.
+Once the application grows bigger it might be a good idea to consider relational database of some kind instead of "ad-hoc" persistence.
+
+HARDWARE SETUP FOR DEPLOYMENT AND TESTING
+=====
+I'd probably use rackmount servers (Fujitsu-ts, HP or whoever gives better offer) with decent processing power and ssds + NAS (NetApp?) for artifacts. It is hard to decide on the proper infrastructure without knowing the bottlenecks, so in the beggining I'd go for the most generic one:
+- Rackmount server for Jenkins maser.
+- Rackmount server for Jenkins build/test slave (since we don't need any specific hardware test and build can be on the same hardware).
+- Rackmount server for production with 10GB link to the outside world.
+- 10GB network for NAS and 1GB (much cheaper) for communication between deployment server and production/test env.
+
+
+SECURITY CONSIDERATIONS
+=====
+I did not focus on security in this setup. What I'd do to harden the environment:
+- Change the default tomcat 4XX and 5XX http response pages (in fact remove all traces which may give away the servlet container identity).
+- Block unused ports with iptables (just leave out ssh preferably on a high port like 2222 and restrict it to internal network only (no outside ssh connections), and http (80)).
+- Docker may not be the safest (lxc in general is not the safest technology, but again which one is?).
+
+
+ISSUES WITH CURRENT SETUP (AND HOW TO MAKE IT BETTER)
+=====
+The setup I'm presenting here is simple (not to say simplistic) in real world I'd use fast http server (e.g. nginx) to serve static content (and cache it). Both for jenkins and for production software.
+Visible problems (challenges [;):
+- There is no security hardening (as I have mentioned previously).
+- No HA setup as well.
+- There also isn't any monitoring (like nagios or even munin).
+- In a real world setup we also would like to get some "meta artifacts" like release note.
+- One can notice that there is a test and production environment disparity. The test env tomcat runs on host directly, while on production the application is "dockerized". However docker makes it easy to run the final product outside of production environment. Whether this is a problem or not is debatable (tomcat on host may be easier for quick access (config files and so on) without building new images.
+- There is no housekeeping, old images wont be removed and old artifacts wont be rotated. There is also no docker registry persistence.
+To sum it up: For initial work this setup might be ok, but in a longer run it would have to be extended and greatly improved.
